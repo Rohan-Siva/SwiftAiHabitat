@@ -37,18 +37,56 @@ class ARService: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
     
-    func addVirtualObject(at position: SIMD3<Float>) {
+    
+    private var selectedEntity: ModelEntity?
+    
+    func addVirtualObject(at position: SIMD3<Float>, label: String = "Object") {
         let anchor = AnchorEntity(world: position)
-        // Placeholder mesh
-        let mesh = MeshResource.generateBox(size: 0.1)
-        let material = SimpleMaterial(color: .blue, isMetallic: true)
+        
+        let color = UIColor(hue: CGFloat.random(in: 0...1), saturation: 0.8, brightness: 0.8, alpha: 1.0)
+        let mesh = MeshResource.generateBox(size: 0.15)
+        let material = SimpleMaterial(color: color, isMetallic: false)
         let entity = ModelEntity(mesh: mesh, materials: [material])
+        
+        entity.generateCollisionShapes(recursive: true)
+        entity.name = label
         
         anchor.addChild(entity)
         arView.scene.addAnchor(anchor)
     }
     
-    // MARK: - Interaction & Debugging
+    func selectEntity(at point: CGPoint) -> String? {
+        let hitTest = arView.hitTest(point)
+        if let firstHit = hitTest.first, let entity = firstHit.entity as? ModelEntity {
+            selectedEntity = entity
+            
+            let material = SimpleMaterial(color: .green, isMetallic: true)
+            entity.model?.materials = [material]
+            
+            return entity.name
+        }
+        return nil
+    }
+    
+    func moveSelectedEntity(to point: CGPoint) {
+        guard let entity = selectedEntity, let result = raycast(from: point) else { return }
+        
+        let position = SIMD3<Float>(result.worldTransform.columns.3.x,
+                                  result.worldTransform.columns.3.y,
+                                  result.worldTransform.columns.3.z)
+        
+        if let anchor = entity.parent as? AnchorEntity {
+            anchor.position = position
+        }
+    }
+    
+    func deselectEntity() {
+        guard let entity = selectedEntity else { return }
+        let material = SimpleMaterial(color: .blue, isMetallic: false)
+        entity.model?.materials = [material]
+        selectedEntity = nil
+    }
+
     
     func raycast(from point: CGPoint) -> ARRaycastResult? {
         let query = arView.makeRaycastQuery(from: point, allowing: .estimatedPlane, alignment: .any)
@@ -60,16 +98,17 @@ class ARService: NSObject, ObservableObject, ARSessionDelegate {
     
     func toggleMeshVisualization(_ enabled: Bool) {
         if enabled {
-            arView.debugOptions.insert(.showSceneUnderstanding)
+            arView.debugOptions.insert([.showSceneUnderstanding, .showPhysics])
+            arView.environment.sceneUnderstanding.options.insert(.occlusion)
         } else {
-            arView.debugOptions.remove(.showSceneUnderstanding)
+            arView.debugOptions.remove([.showSceneUnderstanding, .showPhysics])
+            arView.environment.sceneUnderstanding.options.remove(.occlusion)
         }
     }
     
     func addAnnotation(text: String, at position: SIMD3<Float>) {
         let anchor = AnchorEntity(world: position)
         
-        // Create a simple text mesh
         let mesh = MeshResource.generateText(text,
                                            extrusionDepth: 0.01,
                                            font: .systemFont(ofSize: 0.05),
@@ -80,7 +119,6 @@ class ARService: NSObject, ObservableObject, ARSessionDelegate {
         let material = SimpleMaterial(color: .white, isMetallic: false)
         let entity = ModelEntity(mesh: mesh, materials: [material])
         
-        // Billboard constraint so text always faces camera
         entity.look(at: arView.cameraTransform.translation, from: position, relativeTo: nil)
         
         anchor.addChild(entity)
