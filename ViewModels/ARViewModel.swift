@@ -7,7 +7,11 @@ class ARViewModel: ObservableObject {
     @Published var visionService = VisionService()
     @Published var mlService = MLService()
     
-    @Published var detectedObjects: [ScannedObject] = []
+    @Published var detectedObjects: [ScannedObject] = [] {
+        didSet {
+            PersistenceService.shared.save(detectedObjects)
+        }
+    }
     @Published var lastPrediction: String = ""
     @Published var isDebugMode: Bool = false {
         didSet {
@@ -18,6 +22,7 @@ class ARViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     init() {
+        self.detectedObjects = PersistenceService.shared.load()
         setupBindings()
     }
     
@@ -55,21 +60,69 @@ class ARViewModel: ObservableObject {
         }
     }
     
+    @Published var isWhatIfMode: Bool = false
+    @Published var selectedObject: String?
+    
+    // ... setupBindings ... (unchanged)
+    
     func handleTap(at point: CGPoint) {
+        if isWhatIfMode {
+            handleWhatIfTap(at: point)
+        } else {
+            handleAnalysisTap(at: point)
+        }
+    }
+    
+    private func handleWhatIfTap(at point: CGPoint) {
+        // 1. Try to select an existing object
+        if let objectName = arService.selectEntity(at: point) {
+            self.selectedObject = objectName
+            self.lastPrediction = "Selected: \(objectName)"
+            return
+        }
+        
+        // 2. If nothing selected, maybe we want to deselect?
+        // For this demo, if we have a selected object and tap elsewhere, we move it there
+        if selectedObject != nil {
+            arService.moveSelectedEntity(to: point)
+            arService.deselectEntity()
+            self.selectedObject = nil
+            self.lastPrediction = "Moved object"
+        }
+    }
+    
+    private func handleAnalysisTap(at point: CGPoint) {
         if let result = arService.raycast(from: point) {
-            // Place an anchor at the tapped location
-            let position = SIMD3<Float>(result.worldTransform.columns.3.x,
-                                      result.worldTransform.columns.3.y,
-                                      result.worldTransform.columns.3.z)
+             let position = SIMD3<Float>(result.worldTransform.columns.3.x,
+                                       result.worldTransform.columns.3.y,
+                                       result.worldTransform.columns.3.z)
             
-            arService.addVirtualObject(at: position)
+            // Check if we hit an existing object first?
+            // For now, always place new object or analyze
             
-            // Simulate analyzing the tapped object
+            // Query model first to see if we should place or just label
+            // For demo: Always place a "Scanned Object" then analyze it
+            
+            arService.addVirtualObject(at: position, label: "Analyzing...")
+            
             Task {
-                let prediction = await mlService.queryFoundationModel(prompt: "What is at this location?")
+                // prediction using our new MLService
+                // We need the screen center or crop at tap location properly?
+                // For simplicity, we predict the whole frame or center crop.
+                // Ideally we crop around the tap, but MLService currently takes the whole buffer.
+                // Let's assume center crop focus for now.
+                
+                guard let frame = arService.currentFrame else { return }
+                let prediction = await mlService.predictAffordances(for: frame.capturedImage)
+                
                 DispatchQueue.main.async {
-                    self.arService.addAnnotation(text: "Analyzed", at: position)
-                    self.lastPrediction = prediction
+                    // Update label of the last placed object
+                    // In a real app we'd track the UUID of the entity we just added.
+                    self.arService.addAnnotation(text: prediction, at: position)
+                    self.lastPrediction = "Detected: \(prediction)"
+                    
+                    let scannedObj = ScannedObject(id: UUID(), name: prediction, category: "Furniture", position: position)
+                    self.detectedObjects.append(scannedObj)
                 }
             }
         }
@@ -87,6 +140,7 @@ class ARViewModel: ObservableObject {
     func resetSession() {
         arService.setupAR()
         detectedObjects.removeAll()
+        PersistenceService.shared.clear()
         lastPrediction = ""
     }
 }
